@@ -230,6 +230,11 @@ internal class ListEditor : Window, IDisposable
                 if (ImGui.Checkbox("Only Restock Non-Crafted Items", ref SelectedList.OnlyRestockNonCrafted))
                     P.Config.Save();
 
+                if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
+                {
+                    Task.Run(() => RetainerInfo.RetrieveOutputsFromRetainers(SelectedList));
+                }
+
                 if (Endurance.Enable || CraftingListUI.Processing)
                     ImGui.EndDisabled();
             }
