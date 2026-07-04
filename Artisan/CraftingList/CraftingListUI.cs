@@ -125,7 +125,7 @@ namespace Artisan.CraftingLists
 
                             if (ImGui.Button("Retrieve Craft Outputs From Retainers", new Vector2(ImGui.GetContentRegionAvail().X, 30)))
                             {
-                                Task.Run(() => RetainerInfo.RetrieveOutputsFromRetainers(selectedList));
+                                RetrieveItemSelectionWindow.Open(selectedList);
                             }
                         }
                     }

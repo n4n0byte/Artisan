@@ -239,7 +239,7 @@ internal class ListEditor : Window, IDisposable
                 {
                     if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
                     {
-                        Task.Run(() => RetainerInfo.RetrieveOutputsFromRetainers(SelectedList));
+                        RetrieveItemSelectionWindow.Open(SelectedList);
                     }
                 }
 
@@ -1668,7 +1668,7 @@ internal class ListFolders : ItemSelector<NewCraftingList>
         var selected = ImGui.Selectable($"{l.Name} (ID: {l.ID})", idx == CurrentIdx);
         if (selected)
         {
-            if (!P.ws.Windows.Any(x => x.WindowName.Contains(l.ID.ToString())))
+            if (!P.ws.Windows.Any(x => x is ListEditor && x.WindowName.Contains(l.ID.ToString())))
             {
                 Interface.SetupValues();
                 ListEditor editor = new(l);
@@ -1676,7 +1676,7 @@ internal class ListFolders : ItemSelector<NewCraftingList>
             else
             {
                 P.ws.Windows.TryGetFirst(
-                    x => x.WindowName.Contains(l.ID.ToString()),
+                    x => x is ListEditor && x.WindowName.Contains(l.ID.ToString()),
                     out var window);
                 window.BringToFront();
             }
