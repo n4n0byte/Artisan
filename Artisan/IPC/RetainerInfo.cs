@@ -9,6 +9,7 @@ using ECommons;
 using ECommons.Automation.LegacyTaskManager;
 using ECommons.DalamudServices;
 using ECommons.ExcelServices.TerritoryEnumeration;
+using ECommons.ImGuiMethods;
 using ECommons.Reflection;
 using ECommons.Throttlers;
 using ECommons.UIHelpers.AddonMasterImplementations;
@@ -454,6 +455,71 @@ namespace Artisan.IPC
 
                 //Refresh retainer cache if empty
                 GetRetainerItemCount(material.Key);
+            }
+
+            WithdrawItemsFromRetainers(requiredItems);
+        }
+
+        public static Dictionary<uint, int> GetRetrievalItems(NewCraftingList list)
+        {
+            Dictionary<uint, int> targets = new();
+            HashSet<uint> usedAsIngredient = new();
+
+            foreach (var item in list.Recipes)
+            {
+                if (item.ListItemOptions?.Skipping == true || item.Quantity == 0) continue;
+                var recipe = LuminaSheets.RecipeSheet[item.ID];
+
+                var itemId = recipe.ItemResult.RowId;
+                if (itemId > 19)
+                {
+                    var quantity = item.Quantity * (int)recipe.AmountResult;
+                    if (!targets.TryAdd(itemId, quantity))
+                        targets[itemId] += quantity;
+                }
+
+                foreach (var ing in recipe.Ingredients().Where(x => x.Amount > 0))
+                    usedAsIngredient.Add(ing.Item.RowId);
+            }
+
+            Dictionary<uint, int> required = new();
+            foreach (var target in targets)
+            {
+                // Final outputs only: skip intermediates consumed by other recipes in this list.
+                if (usedAsIngredient.Contains(target.Key)) continue;
+
+                var needed = target.Value - CraftingListUI.NumberOfIngredient(target.Key);
+                if (needed > 0)
+                    required.Add(target.Key, needed);
+            }
+
+            return required;
+        }
+
+        public static void RetrieveOutputsFromRetainers(NewCraftingList list)
+        {
+            if (!ATools) return;
+
+            if (TM.IsBusy)
+            {
+                Notify.Error("Cannot retrieve craft outputs: retainer tasks are already running.");
+                return;
+            }
+
+            var retrievalItems = GetRetrievalItems(list);
+            if (retrievalItems.Count == 0)
+            {
+                Notify.Info("Nothing to retrieve: you already have this list's outputs in your inventory.");
+                return;
+            }
+
+            Dictionary<int, int> requiredItems = new();
+            foreach (var item in retrievalItems)
+            {
+                requiredItems.Add((int)item.Key, item.Value);
+
+                //Refresh retainer cache if empty
+                GetRetainerItemCount(item.Key);
             }
 
             WithdrawItemsFromRetainers(requiredItems);
