@@ -525,6 +525,52 @@ namespace Artisan.IPC
             WithdrawItemsFromRetainers(requiredItems);
         }
 
+        public static HashSet<uint> GetListFinalOutputs(NewCraftingList list)
+        {
+            HashSet<uint> outputs = new();
+            HashSet<uint> usedAsIngredient = new();
+
+            foreach (var item in list.Recipes)
+            {
+                if (item.ListItemOptions?.Skipping == true || item.Quantity == 0) continue;
+                var recipe = LuminaSheets.RecipeSheet[item.ID];
+
+                var itemId = recipe.ItemResult.RowId;
+                if (itemId > 19)
+                    outputs.Add(itemId);
+
+                foreach (var ing in recipe.Ingredients().Where(x => x.Amount > 0))
+                    usedAsIngredient.Add(ing.Item.RowId);
+            }
+
+            // Final outputs only: drop intermediates consumed by other recipes in this list.
+            outputs.ExceptWith(usedAsIngredient);
+            return outputs;
+        }
+
+        public static void RetrieveFromRetainers(Dictionary<uint, int> items)
+        {
+            if (!ATools) return;
+            if (items.Count == 0) return;
+
+            if (TM.IsBusy)
+            {
+                Notify.Error("Cannot retrieve craft outputs: retainer tasks are already running.");
+                return;
+            }
+
+            Dictionary<int, int> requiredItems = new();
+            foreach (var item in items)
+            {
+                requiredItems.Add((int)item.Key, item.Value);
+
+                //Refresh retainer cache if empty
+                GetRetainerItemCount(item.Key);
+            }
+
+            WithdrawItemsFromRetainers(requiredItems);
+        }
+
         private static void WithdrawItemsFromRetainers(Dictionary<int, int> requiredItems)
         {
             if (RetainerData.SelectMany(x => x.Value).Any(x => requiredItems.Any(y => y.Key == x.Value.ItemId)))
