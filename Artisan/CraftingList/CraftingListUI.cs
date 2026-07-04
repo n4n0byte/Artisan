@@ -196,7 +196,7 @@ namespace Artisan.CraftingLists
                 selectedList.ExpandedList.AddRange(Enumerable.Repeat(r.ID, r.Quantity));
             }
 
-            if (P.ws.Windows.TryGetFirst(x => x.WindowName.Contains(selectedList.ID.ToString(), StringComparison.CurrentCultureIgnoreCase), out var window))
+            if (P.ws.Windows.TryGetFirst(x => x is ListEditor && x.WindowName.Contains(selectedList.ID.ToString(), StringComparison.CurrentCultureIgnoreCase), out var window))
                 window.IsOpen = false;
 
 
