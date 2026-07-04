@@ -221,18 +221,26 @@ internal class ListEditor : Window, IDisposable
                 if (Endurance.Enable || CraftingListUI.Processing)
                     ImGui.BeginDisabled();
 
-                if (ImGui.Button($"Restock From Retainers"))
+                bool disableBell = !Player.Available ? false : RetainerInfo.GetReachableRetainerBell() == null;
+
+                using (ImRaii.Disabled(disableBell))
                 {
-                    Task.Run(() => RetainerInfo.RestockFromRetainers(SelectedList));
+                    if (ImGui.Button($"Restock From Retainers"))
+                    {
+                        Task.Run(() => RetainerInfo.RestockFromRetainers(SelectedList));
+                    }
                 }
 
                 ImGui.SameLine();
                 if (ImGui.Checkbox("Only Restock Non-Crafted Items", ref SelectedList.OnlyRestockNonCrafted))
                     P.Config.Save();
 
-                if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
+                using (ImRaii.Disabled(disableBell))
                 {
-                    Task.Run(() => RetainerInfo.RetrieveOutputsFromRetainers(SelectedList));
+                    if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
+                    {
+                        Task.Run(() => RetainerInfo.RetrieveOutputsFromRetainers(SelectedList));
+                    }
                 }
 
                 if (Endurance.Enable || CraftingListUI.Processing)
