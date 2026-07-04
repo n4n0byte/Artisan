@@ -323,7 +323,9 @@ The resulting block:
                 }
 ```
 
-(No `ImGui.SameLine()` before the new button — it starts a new row above the tab bar. It sits inside the same `Endurance.Enable || CraftingListUI.Processing` disabled region as the restock button, matching that location's gating; the method's own `TM.IsBusy` guard from Task 2 covers a queue collision.)
+(No `ImGui.SameLine()` before the new button — it starts a new row above the tab bar. It sits inside the same `Endurance.Enable || CraftingListUI.Processing` disabled region as the restock button; the method's own `TM.IsBusy` guard from Task 2 covers a queue collision.)
+
+Amended after final review (spec governs over the original plan text here): both editor retainer buttons — the pre-existing "Restock From Retainers" and the new one — are additionally wrapped in `ImRaii.Disabled(disableBell)` where `bool disableBell = !Player.Available ? false : RetainerInfo.GetReachableRetainerBell() == null;` is computed once on the draw thread, matching the main panel's bell gating. The "Only Restock Non-Crafted Items" checkbox stays outside the disabled scopes.
 
 - [ ] **Step 2: Build**
 
