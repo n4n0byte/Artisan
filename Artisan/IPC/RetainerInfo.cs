@@ -456,6 +456,11 @@ namespace Artisan.IPC
                 GetRetainerItemCount(material.Key);
             }
 
+            WithdrawItemsFromRetainers(requiredItems);
+        }
+
+        private static void WithdrawItemsFromRetainers(Dictionary<int, int> requiredItems)
+        {
             if (RetainerData.SelectMany(x => x.Value).Any(x => requiredItems.Any(y => y.Key == x.Value.ItemId)))
             {
                 Svc.Log.Debug($"Processing Retainer Data");
