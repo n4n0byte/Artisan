@@ -15,7 +15,7 @@
 - No automated test infrastructure exists in this repo and the code is game-interop; per task, verification = `dotnet build Artisan.sln` compiling with no NEW errors or warnings, plus the in-game manual checklist in Task 6.
 - Follow existing file idioms exactly: `changed |= ImGui.Checkbox(...)` pattern in `PluginUI.cs`, `TM.Enqueue`/`TM.DelayNext` task chains as in `RetainerInfo.cs`, addon-sheet label matching (never hardcoded English strings, never hardcoded context-menu indices).
 - Failure mode is notify-once-and-keep-crafting: on any deposit failure (no bell, no retainer selected, retainer full), print ONE `DuoLog.Warning` and set a back-off flag that is only cleared when Endurance or a list is (re)started. Never pause crafting, never loop on the bell.
-- Never deposit: crystals (ItemId ≤ 19), collectibles (`Item.IsCollectable`), or items still required as ingredients by remaining uncrafted list entries.
+- Never deposit: crystals (ItemId ≤ 19), collectibles when `AutoDepositCollectables` is off (`Item.IsCollectable`; the toggle defaults to ON), or items still required as ingredients by remaining uncrafted list entries.
 - All commits on `main` (repo convention — no feature branches in this repo's history), message style: short imperative summary.
 
 ---

@@ -21,7 +21,7 @@ restocking from retainers — the deposit is the mirror direction.
   ≤ threshold.
 - Deposit scope: only the current session's output items. For lists, exclude any
   item still required as an ingredient by remaining uncrafted list entries (protects
-  sub-craft chains). Exclude collectibles and crystals.
+  sub-craft chains). Exclude crystals always; exclude collectibles only when the "Also deposit collectable crafts" toggle (AutoDepositCollectables, default ON) is off.
 - Failure mode: if no bell is reachable, the chosen retainer is unavailable, or the
   entrust fails (retainer full), print one chat warning and keep crafting until the
   game's native inventory-full stop. Do not retry until the craft session restarts.
@@ -82,7 +82,7 @@ label (locale-safe, same technique as the Retrieve labels), reuses
 - **Endurance:** the current recipe's `ItemResult` (NQ and HQ stacks).
 - **Lists:** result items of the list's recipes, minus any item that appears as an
   ingredient of a remaining uncrafted entry.
-- Always excluded: collectibles, crystals.
+- Always excluded: crystals. Collectibles excluded only when AutoDepositCollectables (default ON) is disabled.
 
 ## Hook points
 
