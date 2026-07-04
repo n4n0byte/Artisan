@@ -596,7 +596,18 @@ namespace Artisan.IPC
                     var value = Math.Min(requiredItems[item.Key], (int)firstFoundQuantity);
                     if (value == 0) return true;
                     Svc.Log.Debug($"Min withdrawing: {value}, found {firstFoundQuantity}/{requiredItems[item.Key]}");
-                    if (firstFoundQuantity == 1) { requiredItems[item.Key] -= (int)firstFoundQuantity; return true; }
+                    if (firstFoundQuantity == 1)
+                    {
+                        // Quantity-1 stacks (e.g. collectables) are retrieved via "Retrieve All" with no
+                        // numeric popup; keep recursing to walk every matching slot.
+                        requiredItems[item.Key] -= (int)firstFoundQuantity;
+                        TM.EnqueueImmediate(() => _InventoryChanged);
+                        TM.EnqueueImmediate(() =>
+                        {
+                            ExtractItem(requiredItems, item, key);
+                        }, "RecursiveExtract");
+                        return true;
+                    }
                     if (RetainerHandlers.InputNumericValue(value))
                     {
                         requiredItems[item.Key] -= value;
