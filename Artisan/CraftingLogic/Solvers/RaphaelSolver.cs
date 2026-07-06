@@ -227,6 +227,88 @@ namespace Artisan.CraftingLogic.Solvers
             Tasks.TryAdd(key, info);
         }
 
+        // Runs raphael-cli once and returns the parsed result. Unlike Build, this has no cache or
+        // auto-switch side effects; the caller decides what to do with the solution.
+        public static async Task<RaphaelRunResult?> RunRaphaelAsync(CraftState craft, RaphaelSolutionConfig config, int initialQuality, int? targetQualityOverride, CancellationToken token)
+        {
+            if (!CLIExists() || craft.StatLevel < 7)
+                return null;
+
+            var target = craft.CraftCollectible && !craft.IsCosmic ? craft.CraftQualityMin3 : craft.CraftQualityMax;
+            var argsList = new List<string>
+            {
+                $"--custom-recipe {craft.LevelTable.RowId} {craft.CraftProgress} {target} {craft.CraftDurability} {(craft.CraftExpert ? "1" : "0")}",
+                $"--stellar-steady-hand {Math.Min(craft.CurrentSteadyHandCharges, P.Config.RaphaelSolverConfig.MaxStellarHand)}",
+                $"--level {craft.StatLevel}",
+                $"--stats {craft.StatCraftsmanship} {craft.StatControl} {craft.StatCP}",
+                $"--initial {initialQuality}",
+            };
+            if (targetQualityOverride is int tq) argsList.Add($"--target-quality {tq}");
+            if (config.HasManipulation) argsList.Add("--manipulation");
+            if (config.EnsureReliability) argsList.Add("--adversarial");
+            if (config.BackloadProgress) argsList.Add("--backload-progress");
+            if (config.UseHeartAndSoul) argsList.Add("--heart-and-soul");
+            if (config.UseQuickInno) argsList.Add("--quick-innovation");
+            if (P.Config.RaphaelSolverConfig.MaximumThreads > 0)
+                argsList.Add($"--threads {P.Config.RaphaelSolverConfig.MaximumThreads}");
+            argsList.Add("--output-variables action_ids final_quality steps duration");
+            argsList.Add("--output-field-separator ;");
+
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = Path.Join(Path.GetDirectoryName(Svc.PluginInterface.AssemblyLocation.FullName), "raphael-cli.bin"),
+                        Arguments = $"solve {string.Join(' ', argsList)}",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    },
+                    EnableRaisingEvents = true
+                };
+
+                Svc.Log.Debug($"Spawning Raphael process with args: {process.StartInfo.Arguments}");
+                process.Start();
+
+                using (token.Register(() => { try { if (!process.HasExited) process.Kill(); } catch (Exception ex) { ex.Log(); } }))
+                {
+                    var stdOutTask = process.StandardOutput.ReadToEndAsync(token);
+                    var stdErrTask = process.StandardError.ReadToEndAsync(token);
+                    await Task.WhenAll(stdOutTask, stdErrTask, process.WaitForExitAsync(token)).ConfigureAwait(false);
+
+                    if (process.ExitCode != 0)
+                    {
+                        Svc.Log.Warning($"Raphael run failed (exit {process.ExitCode}): {stdErrTask.Result.Trim()}");
+                        return null;
+                    }
+
+                    // Output shape: "[100203, 100179, ...]";10920;15;41
+                    var parts = stdOutTask.Result.Trim().Split(';');
+                    if (parts.Length < 4) return null;
+                    var ids = parts[0].Replace("\"", "").Replace("[", "").Replace("]", "")
+                                      .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                      .Select(x => int.TryParse(x, out var n) ? n : 0)
+                                      .ToList();
+                    if (!int.TryParse(parts[1], out var finalQuality)) return null;
+                    if (!int.TryParse(parts[2], out var steps)) return null;
+                    if (!int.TryParse(parts[3], out var duration)) return null;
+                    return new RaphaelRunResult(ids, finalQuality, steps, duration);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            catch (Exception ex)
+            {
+                ex.Log("Something went wrong with a Raphael speed-optimizer run.");
+                return null;
+            }
+        }
+
         private static void AutoSwitch(CraftState craft, RaphaelOptions key)
         {
             static bool autoSwitchOk(uint recipeId)
@@ -894,6 +976,8 @@ namespace Artisan.CraftingLogic.Solvers
         public bool UseHeartAndSoul = false;
         public bool UseQuickInno = false;
     }
+
+    public sealed record RaphaelRunResult(List<int> ActionIds, int FinalQuality, int Steps, int DurationSeconds);
 
     public class RaphaelOptions : MacroOptions
     {
