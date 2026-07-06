@@ -49,12 +49,19 @@ public static class ListSpeedOptimizer
     {
         try
         {
+            // restore any previous plan first so a re-run starts from the user's original
+            // solvers/flags, not from the optimizer's own prior assignment
+            RestorePlans(list);
+
             // output itemId -> list item that crafts it
             Dictionary<uint, ListItem> producedBy = [];
+            Dictionary<uint, int> consumedQty = []; // total quantity of each item consumed as an ingredient by the list
             foreach (var li in list.Recipes)
             {
                 if (li.ListItemOptions?.Skipping == true || li.Quantity == 0) continue;
                 producedBy.TryAdd(LuminaSheets.RecipeSheet[li.ID].ItemResult.RowId, li);
+                foreach (var ing in LuminaSheets.RecipeSheet[li.ID].Ingredients().Where(x => x.Amount > 0 && x.Item.RowId > 0))
+                    consumedQty[ing.Item.RowId] = consumedQty.GetValueOrDefault(ing.Item.RowId) + ing.Amount * li.Quantity;
             }
 
             var finalOutputs = RetainerInfo.GetListFinalOutputs(list);
@@ -66,6 +73,14 @@ public static class ListSpeedOptimizer
                 if (producedBy.TryGetValue(itemId, out var li) && processed.Add(li.ID))
                     queue.Enqueue(li);
 
+            // items that are both a component AND produced in surplus of what the list consumes
+            // must also be treated as must-HQ (spec: final output + component => must-HQ)
+            foreach (var (itemId, li) in producedBy)
+            {
+                if (li.Quantity * (int)LuminaSheets.RecipeSheet[li.ID].AmountResult > consumedQty.GetValueOrDefault(itemId, 0) && processed.Add(li.ID))
+                    queue.Enqueue(li);
+            }
+
             while (queue.Count > 0)
             {
                 token.ThrowIfCancellationRequested();
@@ -73,7 +88,7 @@ public static class ListSpeedOptimizer
             }
 
             token.ThrowIfCancellationRequested();
-            await DemoteRemainingComponents(list, producedBy, hqNeeded, finalOutputs, token);
+            await DemoteRemainingComponents(list, producedBy, hqNeeded, finalOutputs, processed, token);
 
             list.SpeedOptimized = true;
             P.Config.Save(); // also persists RaphaelCache
@@ -82,11 +97,13 @@ public static class ListSpeedOptimizer
         catch (OperationCanceledException)
         {
             Status = OptimizerState.Cancelled;
+            P.Config.Save(); // persist whatever was applied before cancellation
         }
         catch (Exception ex)
         {
             ex.Log("List speed optimization failed.");
             Status = OptimizerState.Failed;
+            P.Config.Save(); // persist whatever was applied before the failure
         }
         finally
         {
@@ -284,7 +301,7 @@ public static class ListSpeedOptimizer
         LastResults.Add($"{itemName}: HQ with starting quality {plannedIQ} ({production.Steps} steps){(hqNames.Count > 0 ? $", needs HQ: {string.Join(", ", hqNames)}" : ", all crafted components NQ")}.");
     }
 
-    private static async Task DemoteRemainingComponents(NewCraftingList list, Dictionary<uint, ListItem> producedBy, HashSet<uint> hqNeeded, HashSet<uint> finalOutputs, CancellationToken token)
+    private static async Task DemoteRemainingComponents(NewCraftingList list, Dictionary<uint, ListItem> producedBy, HashSet<uint> hqNeeded, HashSet<uint> finalOutputs, HashSet<uint> processed, CancellationToken token)
     {
         foreach (var li in list.Recipes)
         {
@@ -295,6 +312,7 @@ public static class ListSpeedOptimizer
             if (finalOutputs.Contains(outId)) continue;      // final output, not a component
             if (!producedBy.ContainsKey(outId)) continue;
             if (hqNeeded.Contains(outId)) continue;          // must stay HQ
+            if (processed.Contains(li.ID)) continue;         // already planned as must-HQ (e.g. surplus producer)
             if (li.ListItemOptions?.NQOnly == true) continue; // user already handles it
 
             var itemName = recipe.ItemResult.Value.Name.ToString();
@@ -347,7 +365,8 @@ public static class ListSpeedOptimizer
         }
     }
 
-    public static void Clear(NewCraftingList list)
+    // Restores each planned item's previous solver and optimizer-set NQOnly flag, and drops the plan.
+    private static void RestorePlans(NewCraftingList list)
     {
         foreach (var li in list.Recipes)
         {
@@ -365,6 +384,11 @@ public static class ListSpeedOptimizer
             li.ListItemOptions!.SpeedPlan = null;
         }
         list.SpeedOptimized = false;
+    }
+
+    public static void Clear(NewCraftingList list)
+    {
+        RestorePlans(list);
         P.Config.Save();
     }
 }

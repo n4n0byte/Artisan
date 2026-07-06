@@ -463,9 +463,7 @@ namespace Artisan.CraftingLogic.Solvers
             {
                 if (k.InitialQuality > key.InitialQuality || k.InitialQuality <= bestIQ)
                     continue;
-                var probe = k.JSONClone();
-                probe.InitialQuality = key.InitialQuality;
-                if (probe.Equals(key))
+                if (KeysMatchIgnoringIQ(k, key))
                 {
                     best = m;
                     bestIQ = k.InitialQuality;
@@ -475,6 +473,24 @@ namespace Artisan.CraftingLogic.Solvers
             raphaelSolution = best;
             return best != null;
         }
+
+        // Equality over every RaphaelOptions key field EXCEPT InitialQuality (see GetKeyForLookups).
+        private static bool KeysMatchIgnoringIQ(RaphaelOptions a, RaphaelOptions b) =>
+            a.Level == b.Level &&
+            a.Progress == b.Progress &&
+            a.QualityMax == b.QualityMax &&
+            a.Durability == b.Durability &&
+            a.MinCraftsmanship == b.MinCraftsmanship &&
+            a.MinControl == b.MinControl &&
+            a.MinCP == b.MinCP &&
+            a.IsExpert == b.IsExpert &&
+            a.IsSpecialist == b.IsSpecialist &&
+            a.SteadyHandUses == b.SteadyHandUses &&
+            a.SolutionConfig.UseHeartAndSoul == b.SolutionConfig.UseHeartAndSoul &&
+            a.SolutionConfig.UseQuickInno == b.SolutionConfig.UseQuickInno &&
+            a.SolutionConfig.HasManipulation == b.SolutionConfig.HasManipulation &&
+            a.SolutionConfig.EnsureReliability == b.SolutionConfig.EnsureReliability &&
+            a.SolutionConfig.BackloadProgress == b.SolutionConfig.BackloadProgress;
 
         public static bool InProgress(CraftState craft, RaphaelSolutionConfig config) => Tasks.TryGetValue(GetOptions(craft, config), out var _);
 

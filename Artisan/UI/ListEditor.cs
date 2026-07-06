@@ -1179,7 +1179,7 @@ internal class ListEditor : Window, IDisposable
             ImGuiEx.Text(ImGuiColors.DalamudYellow, $"Solving {ListSpeedOptimizer.CurrentItemName}... ({ListSpeedOptimizer.SolvesDone} solves done)");
         }
 
-        if (SelectedList.SpeedOptimized && !running)
+        if ((SelectedList.SpeedOptimized || SelectedList.Recipes.Any(x => x.ListItemOptions?.SpeedPlan != null)) && !running)
         {
             ImGui.SameLine();
             if (ImGui.Button("Clear speed optimization"))
