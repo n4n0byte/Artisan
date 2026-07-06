@@ -225,6 +225,11 @@ internal class ListEditor : Window, IDisposable
 
                 using (ImRaii.Disabled(disableBell))
                 {
+                    if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
+                    {
+                        RetrieveItemSelectionWindow.Open(SelectedList);
+                    }
+
                     if (ImGui.Button($"Restock From Retainers"))
                     {
                         Task.Run(() => RetainerInfo.RestockFromRetainers(SelectedList));
@@ -234,14 +239,6 @@ internal class ListEditor : Window, IDisposable
                 ImGui.SameLine();
                 if (ImGui.Checkbox("Only Restock Non-Crafted Items", ref SelectedList.OnlyRestockNonCrafted))
                     P.Config.Save();
-
-                using (ImRaii.Disabled(disableBell))
-                {
-                    if (ImGui.Button($"Retrieve Craft Outputs From Retainers"))
-                    {
-                        RetrieveItemSelectionWindow.Open(SelectedList);
-                    }
-                }
 
                 if (Endurance.Enable || CraftingListUI.Processing)
                     ImGui.EndDisabled();
