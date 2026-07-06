@@ -545,6 +545,7 @@ namespace Artisan.CraftingLists
                 // Fastest Raphael: if the current list item carries a speed plan, assign the exact
                 // planned NQ/HQ split instead of maxing HQ. Top up with HQ when NQ runs short
                 // (quick-synth HQ procs) - starting quality can only overshoot, never undershoot.
+                // If HQ runs short instead, fall back to NQ so the full ingredient count is always assigned.
                 if (setIngredients == null && !Endurance.IPCOverride && CraftingListUI.Processing && CraftingListUI.selectedList != null)
                 {
                     var listItem = CraftingListUI.selectedList.Recipes.FirstOrDefault(x => x.ID == CraftingListUI.CurrentProcessedItem);
@@ -572,6 +573,11 @@ namespace Artisan.CraftingLists
                                 {
                                     nq = ingredient.NumAvailableNQ;
                                     hq = ingredient.NumTotal - nq;
+                                }
+                                if (ingredient.NumAvailableHQ < hq)
+                                {
+                                    hq = ingredient.NumAvailableHQ;
+                                    nq = ingredient.NumTotal - hq;
                                 }
                                 ingredient.SetSpecific(nq, hq);
                                 Svc.Log.Debug($"SpeedPlan assign {ingredient.ItemId.NameOfItem()}: {nq} NQ / {hq} HQ");
