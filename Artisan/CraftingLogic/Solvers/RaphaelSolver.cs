@@ -655,7 +655,9 @@ namespace Artisan.CraftingLogic.Solvers
             {
                 Svc.Log.Info($"Loaded existing Raphael cache from file ({v6cache.Keys.Count} entries)");
                 CurrentCache = v6cache;
-                P.PluginUi.RaphaelCacheUI.Table = null;
+                // during a plugin reload while logged in, this runs from the constructor before PluginUi exists
+                if (P.PluginUi != null)
+                    P.PluginUi.RaphaelCacheUI.Table = null;
             }
             else if (!config.RaphaelSolverCacheV5.IsEmpty && !config.RaphaelV5Converted)
             {
@@ -707,7 +709,8 @@ namespace Artisan.CraftingLogic.Solvers
                     Directory.CreateDirectory(root);
 
                 File.WriteAllText(file.FullName, json);
-                P.PluginUi.RaphaelCacheUI.Table = null;
+                if (P.PluginUi != null)
+                    P.PluginUi.RaphaelCacheUI.Table = null;
             }
             catch (Exception e)
             {
