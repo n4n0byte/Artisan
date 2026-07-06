@@ -75,6 +75,8 @@ namespace Artisan.CraftingLists
 
         public bool OnlyRestockNonCrafted = false;
 
+        public bool SpeedOptimized;
+
         [NonSerialized]
         public bool Locked = false;
 
@@ -98,6 +100,25 @@ namespace Artisan.CraftingLists
         // TODO: custom RecipeConfig?
 
         public bool Skipping { get; set; }
+
+        public SpeedPlan? SpeedPlan { get; set; }
+    }
+
+    // Produced by ListSpeedOptimizer ("Fastest Raphael"). Describes how this list item is
+    // crafted: either with an exact NQ/HQ ingredient assignment (must-HQ items) or demoted
+    // to an NQ craft. PreviousSolver* snapshot what RecipeConfigs held before optimization
+    // so "Clear speed optimization" can restore it.
+    public class SpeedPlan
+    {
+        public int[] HQCounts { get; set; } = [];   // aligned with recipe.Ingredients() enumeration; full amount or 0 per slot
+        public int PlannedIQ { get; set; }          // initial quality the Raphael solution was generated at
+        public bool DemotedToNQ { get; set; }       // this item itself is crafted NQ
+        public int NQMacroId { get; set; }          // macro assigned when demoted & not quick-synthable (0 = quick synth / none)
+        public string PreviousSolverType { get; set; } = "";
+        public int PreviousSolverFlavour { get; set; }
+        public int SnapshotCraftsmanship { get; set; }
+        public int SnapshotControl { get; set; }
+        public int SnapshotCP { get; set; }
     }
 
     public static class CraftingListFunctions
