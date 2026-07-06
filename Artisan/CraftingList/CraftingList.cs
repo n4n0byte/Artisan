@@ -542,6 +542,46 @@ namespace Artisan.CraftingLists
                 AgentRecipeNote.Instance() != null &&
                 RaptureAtkModule.Instance()->AtkModule.IsAddonReady(AgentRecipeNote.Instance()->AgentInterface.AddonId))
             {
+                // Fastest Raphael: if the current list item carries a speed plan, assign the exact
+                // planned NQ/HQ split instead of maxing HQ. Top up with HQ when NQ runs short
+                // (quick-synth HQ procs) - starting quality can only overshoot, never undershoot.
+                if (setIngredients == null && !Endurance.IPCOverride && CraftingListUI.Processing && CraftingListUI.selectedList != null)
+                {
+                    var listItem = CraftingListUI.selectedList.Recipes.FirstOrDefault(x => x.ID == CraftingListUI.CurrentProcessedItem);
+                    if (listItem?.ListItemOptions?.SpeedPlan is { } plan)
+                    {
+                        if (recipe != null)
+                        {
+                            var recipeRow = LuminaSheets.RecipeSheet[listItem.ID];
+                            Dictionary<uint, int> plannedHQ = [];
+                            int slot = 0;
+                            foreach (var ing in recipeRow.Ingredients())
+                            {
+                                if (ing.Amount > 0 && ing.Item.RowId > 0)
+                                    plannedHQ[ing.Item.RowId] = slot < plan.HQCounts.Length ? plan.HQCounts[slot] : 0;
+                                slot++;
+                            }
+
+                            foreach (ref var ingredient in recipe->IngredientsSpan)
+                            {
+                                if (ingredient.ItemId == 0)
+                                    break;
+                                var hq = plannedHQ.GetValueOrDefault(ingredient.ItemId, 0);
+                                var nq = ingredient.NumTotal - hq;
+                                if (ingredient.NumAvailableNQ < nq)
+                                {
+                                    nq = ingredient.NumAvailableNQ;
+                                    hq = ingredient.NumTotal - nq;
+                                }
+                                ingredient.SetSpecific(nq, hq);
+                                Svc.Log.Debug($"SpeedPlan assign {ingredient.ItemId.NameOfItem()}: {nq} NQ / {hq} HQ");
+                            }
+
+                            return true;
+                        }
+                    }
+                }
+
                 if (setIngredients == null || Endurance.IPCOverride)
                 {
                     //TODO: this needs rewrite

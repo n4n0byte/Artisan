@@ -451,15 +451,29 @@ namespace Artisan.CraftingLogic.Solvers
             config ??= GetRaphConfig(craft);
 
             var key = GetOptions(craft, config);
-            raphaelSolution = null;
-            var hasKey = CurrentCache.ContainsKey(key);
-            if (hasKey)
-            {
-                raphaelSolution = CurrentCache[key];
+            if (CurrentCache.TryGetValue(key, out raphaelSolution))
                 return true;
+
+            // Fallback: a solution generated at LOWER initial quality but otherwise identical
+            // still reaches the target (extra starting quality only overshoots). Covers speed-
+            // optimized crafts where quick-synth HQ procs raised the actual starting quality.
+            Macro? best = null;
+            int bestIQ = -1;
+            foreach (var (k, m) in CurrentCache)
+            {
+                if (k.InitialQuality > key.InitialQuality || k.InitialQuality <= bestIQ)
+                    continue;
+                var probe = k.JSONClone();
+                probe.InitialQuality = key.InitialQuality;
+                if (probe.Equals(key))
+                {
+                    best = m;
+                    bestIQ = k.InitialQuality;
+                }
             }
-            else
-                return false;
+
+            raphaelSolution = best;
+            return best != null;
         }
 
         public static bool InProgress(CraftState craft, RaphaelSolutionConfig config) => Tasks.TryGetValue(GetOptions(craft, config), out var _);
