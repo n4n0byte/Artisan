@@ -260,6 +260,8 @@ internal class ListEditor : Window, IDisposable
                     ImGuiEx.Text(ImGuiColors.DalamudYellow, $"You have turned off Allagan Tools integration.");
             }
 
+            DrawSpeedOptimizer();
+
             if (ImGui.BeginTabBar("CraftingListEditor", ImGuiTabBarFlags.None))
             {
                 if (ImGui.BeginTabItem("Recipes"))
@@ -1151,6 +1153,70 @@ internal class ListEditor : Window, IDisposable
         ImGui.EndChild();
     }
 
+    private void DrawSpeedOptimizer()
+    {
+        if (!RaphaelCache.CLIExists())
+            return;
+
+        ImGui.Separator();
+
+        var running = ListSpeedOptimizer.Status == ListSpeedOptimizer.OptimizerState.Running;
+
+        using (ImRaii.Disabled(running || CraftingListUI.Processing || Endurance.Enable))
+        {
+            if (ImGui.Button("Optimize for Speed (Fastest Raphael)"))
+                ListSpeedOptimizer.Run(SelectedList);
+        }
+        if (ImGui.IsItemHovered())
+            ImGuiEx.Tooltip("Finds the minimum components that must be crafted HQ for the list's final items to still reach 100% quality with Raphael,\nthen demotes the rest to NQ (quick synth or a generated progress-only macro) and assigns materials to match at craft time.");
+
+        if (running)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel##SpeedOpt"))
+                ListSpeedOptimizer.Cancel();
+            ImGui.SameLine();
+            ImGuiEx.Text(ImGuiColors.DalamudYellow, $"Solving {ListSpeedOptimizer.CurrentItemName}... ({ListSpeedOptimizer.SolvesDone} solves done)");
+        }
+
+        if (SelectedList.SpeedOptimized && !running)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Clear speed optimization"))
+            {
+                ListSpeedOptimizer.Clear(SelectedList);
+            }
+
+            DrawSpeedStalenessWarning();
+        }
+
+        if (ListSpeedOptimizer.LastResults.Count > 0 && !running)
+        {
+            if (ImGui.CollapsingHeader("Speed Optimization Results"))
+                foreach (var line in ListSpeedOptimizer.LastResults)
+                    ImGui.TextWrapped(line);
+        }
+    }
+
+    private void DrawSpeedStalenessWarning()
+    {
+        foreach (var li in SelectedList.Recipes)
+        {
+            var plan = li.ListItemOptions?.SpeedPlan;
+            if (plan == null || plan.DemotedToNQ) continue;
+            var recipe = LuminaSheets.RecipeSheet[li.ID];
+            var stats = CharacterStats.GetBaseStatsForClassHeuristic((Job)((uint)Job.CRP + recipe.CraftType.RowId));
+            var config = P.Config.RecipeConfigs.GetValueOrDefault(li.ID) ?? new();
+            stats.AddConsumables(new(config.RequiredFood, config.RequiredFoodHQ), new(config.RequiredPotion, config.RequiredPotionHQ), CharacterInfo.FCCraftsmanshipbuff);
+            var craft = Crafting.BuildCraftStateForRecipe(stats, (Job)((uint)Job.CRP + recipe.CraftType.RowId), recipe);
+            if (craft.StatCraftsmanship < plan.SnapshotCraftsmanship || craft.StatControl < plan.SnapshotControl || craft.StatCP < plan.SnapshotCP)
+            {
+                ImGuiEx.TextWrapped(ImGuiColors.DalamudYellow, "Your stats have dropped since this list was speed-optimized. Re-run the optimization or the planned macros may not be found.");
+                return;
+            }
+        }
+    }
+
     private void DrawRecipes()
     {
         if (!SelectedList.IsPremade)
@@ -1248,6 +1314,14 @@ internal class ListEditor : Window, IDisposable
         else
         {
             ImGui.TextWrapped("This item cannot be quick synthed.");
+        }
+
+        if (options?.SpeedPlan is { } speedPlan)
+        {
+            if (speedPlan.DemotedToNQ)
+                ImGuiEx.Text(ImGuiColors.ParsedGreen, "Speed-optimized: crafted NQ");
+            else
+                ImGuiEx.Text(ImGuiColors.ParsedGreen, $"Speed-optimized: HQ with planned materials (starting quality {speedPlan.PlannedIQ})");
         }
 
         if (disabled)
