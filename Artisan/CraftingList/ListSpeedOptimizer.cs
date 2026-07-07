@@ -202,6 +202,13 @@ public static class ListSpeedOptimizer
         {
             cost.SkipOptimize = true;
             cost.TNq = cost.THq = QuickSynthSeconds();
+            // conservative: force this item's crafted HQ-able components HQ (matches the old
+            // ForceComponentsHQ behavior) so a skipped parent's subtree keeps today's quality.
+            foreach (var ing in recipe.Ingredients().Where(x => x.Amount > 0 && x.Item.RowId > 0))
+                if (LuminaSheets.ItemSheet[ing.Item.RowId].CanBeHq
+                    && producedBy.TryGetValue(ing.Item.RowId, out var skipProducer)
+                    && skipProducer.ListItemOptions?.NQOnly != true)
+                    cost.ChosenHQChildIds.Add(ing.Item.RowId);
             return cost;
         }
 
@@ -302,7 +309,10 @@ public static class ListSpeedOptimizer
         int cap = Math.Max(1, P.Config.RaphaelSolverConfig.SpeedOptimizerCandidateCap);
         var cands = candidates;
         if (cands.Count > cap)
+        {
+            LastResults.Add($"{recipe.ItemResult.Value.Name.ToString()}: limited component search to the {cap} most time-efficient candidates.");
             cands = candidates.OrderByDescending(c => c.Contribution / Math.Max(c.Price, 1e-6)).Take(cap).ToList();
+        }
 
         if (cands.Sum(c => c.Contribution) < neededIQ)
         {
@@ -399,6 +409,10 @@ public static class ListSpeedOptimizer
             var recipe = LuminaSheets.RecipeSheet[li.ID];
             var itemName = recipe.ItemResult.Value.Name.ToString();
             bool isHQ = hqSet.Contains(li.ID);
+
+            // user manually marked this NQOnly — leave its flag and solver untouched, no plan
+            // (preserves the "user-NQOnly items never get a plan" invariant RestorePlans relies on)
+            if (!isHQ && li.ListItemOptions?.NQOnly == true) continue;
 
             oldBatch += li.Quantity * cost.THq;
             newBatch += li.Quantity * (isHQ ? cost.THq : cost.TNq);
