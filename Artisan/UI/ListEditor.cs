@@ -1165,7 +1165,7 @@ internal class ListEditor : Window, IDisposable
                 ListSpeedOptimizer.Run(SelectedList);
         }
         if (ImGui.IsItemHovered())
-            ImGuiEx.Tooltip("Finds the minimum components that must be crafted HQ for the list's final items to still reach 100% quality with Raphael,\nthen demotes the rest to NQ (quick synth or a generated progress-only macro) and assigns materials to match at craft time.");
+            ImGuiEx.Tooltip("Plans this list to minimize total crafting time: keeps a component HQ only when that's faster overall than crafting it NQ,\nthen demotes the rest to NQ (quick synth or a generated progress-only macro) and assigns materials to match at craft time.\nFinal items are still guaranteed 100% HQ.");
 
         if (running)
         {
@@ -1315,10 +1315,11 @@ internal class ListEditor : Window, IDisposable
 
         if (options?.SpeedPlan is { } speedPlan)
         {
+            var secs = speedPlan.EstimatedSeconds > 0 ? $" (~{speedPlan.EstimatedSeconds:0.#}s/craft)" : "";
             if (speedPlan.DemotedToNQ)
-                ImGuiEx.Text(ImGuiColors.ParsedGreen, "Speed-optimized: crafted NQ");
+                ImGuiEx.Text(ImGuiColors.ParsedGreen, $"Speed-optimized: crafted NQ{secs}");
             else
-                ImGuiEx.Text(ImGuiColors.ParsedGreen, $"Speed-optimized: HQ with planned materials (starting quality {speedPlan.PlannedIQ})");
+                ImGuiEx.Text(ImGuiColors.ParsedGreen, $"Speed-optimized: HQ with planned materials (start quality {speedPlan.PlannedIQ}){secs}");
         }
 
         if (disabled)
