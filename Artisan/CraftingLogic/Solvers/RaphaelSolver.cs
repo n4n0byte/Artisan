@@ -868,6 +868,8 @@ namespace Artisan.CraftingLogic.Solvers
         public bool GenerateOnExperts = false;
         public int TimeOutMins = 1;
         public int MaxStellarHand = 2;
+        public int SpeedOptimizerCandidateCap = 6;
+        public bool SpeedOptimizerAssume2sQuickSynth = false;
         public bool DefaultRaphSolver = false;
         public bool FallbackToSolverIfRaphaelLocked = true;
         public string FallbackSolverType = typeof(StandardSolverDefinition).FullName!;
@@ -902,6 +904,13 @@ namespace Artisan.CraftingLogic.Solvers
                 ImGui.Dummy(new Vector2(0, 2f));
                 changed |= ImGui.SliderInt("Macro generation timeout (minutes)", ref TimeOutMins, 1, 15);
                 ImGuiComponents.HelpMarker($"If a solution takes longer than this many minutes to generate, macro generation will be canceled.");
+
+                ImGui.Dummy(new Vector2(0, 2f));
+                changed |= ImGui.SliderInt("Speed optimizer: max components to search per craft", ref SpeedOptimizerCandidateCap, 1, 12);
+                ImGuiComponents.HelpMarker("Fastest Raphael list optimizer: how many craftable HQ-able ingredients to consider per craft when picking which to keep HQ. Higher is more exhaustive but slower to optimize. Rarely needs raising.");
+
+                changed |= ImGui.Checkbox("Speed optimizer: assume 2-second quick synth", ref SpeedOptimizerAssume2sQuickSynth);
+                ImGuiComponents.HelpMarker("Models quick synths at 2s per item instead of 3s when estimating list times. Only affects the Fastest Raphael speed optimizer's NQ-vs-HQ decisions and time estimates, not crafting itself.");
 
                 ImGui.Unindent();
                 ImGui.Dummy(new Vector2(0, 2f));
