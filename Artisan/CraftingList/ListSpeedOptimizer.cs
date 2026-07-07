@@ -17,9 +17,10 @@ using System.Threading.Tasks;
 
 namespace Artisan.CraftingLists;
 
-// "Fastest Raphael": plans a crafting list so that only the components Raphael actually
-// needs HQ are crafted HQ; everything else is demoted to NQ. See
-// docs/superpowers/specs/2026-07-06-fastest-raphael-design.md.
+// "Fastest Raphael" — time-based list optimizer. Chooses NQ/HQ per craftable item to
+// minimize total batch craft time (final items still guaranteed 100% HQ). Two passes:
+// bottom-up cost table, then top-down HQ/NQ assignment. See
+// docs/superpowers/specs/2026-07-06-fastest-raphael-time-optimizer-design.md.
 public static class ListSpeedOptimizer
 {
     public enum OptimizerState { Idle, Running, Done, Cancelled, Failed }
@@ -30,6 +31,23 @@ public static class ListSpeedOptimizer
     public static List<string> LastResults { get; private set; } = [];
 
     private static CancellationTokenSource? _cts;
+
+    // Per-item cost/plan produced by pass 1 and consumed by pass 2.
+    private sealed class ItemCost
+    {
+        public double TNq;                       // per-craft NQ seconds (quick synth const, or progress-macro duration)
+        public double THq;                       // per-craft HQ rotation seconds (Raphael duration at PlannedIQ)
+        public double PricePerUnit;              // fully-loaded marginal HQ extra time, per produced unit
+        public int PlannedIQ;
+        public int[] HQCounts = [];              // slot-aligned chosen HQ child amounts for this item's HQ craft
+        public RaphaelRunResult? Production;     // HQ rotation actions (for building the cached macro in pass 2)
+        public List<uint> ChosenHQChildIds = []; // ingredient item ids this item's HQ plan keeps HQ
+        public bool NqIsQuickSynth;
+        public RaphaelRunResult? NqProgressRun;  // progress-only run when not quick-synthable
+        public bool Unreachable;                 // target unreachable -> conservative all-HQ
+        public bool NoQualityTarget;             // item can't be HQ and isn't collectible
+        public bool SkipOptimize;                // Raphael locked / cosmic -> leave as-is
+    }
 
     public static void Run(NewCraftingList list)
     {
@@ -45,17 +63,18 @@ public static class ListSpeedOptimizer
 
     public static void Cancel() => _cts?.Cancel();
 
+    private static double QuickSynthSeconds() => P.Config.RaphaelSolverConfig.SpeedOptimizerAssume2sQuickSynth ? 2.0 : 3.0;
+
     private static async Task Optimize(NewCraftingList list, CancellationToken token)
     {
         try
         {
-            // restore any previous plan first so a re-run starts from the user's original
-            // solvers/flags, not from the optimizer's own prior assignment
+            // start from the user's original solvers/flags, not a prior optimizer run
             RestorePlans(list);
 
-            // output itemId -> list item that crafts it
+            // output itemId -> list item that crafts it; and total units of each item the list consumes
             Dictionary<uint, ListItem> producedBy = [];
-            Dictionary<uint, int> consumedQty = []; // total quantity of each item consumed as an ingredient by the list
+            Dictionary<uint, int> consumedQty = [];
             foreach (var li in list.Recipes)
             {
                 if (li.ListItemOptions?.Skipping == true || li.Quantity == 0) continue;
@@ -65,30 +84,23 @@ public static class ListSpeedOptimizer
             }
 
             var finalOutputs = RetainerInfo.GetListFinalOutputs(list);
-            HashSet<uint> hqNeeded = [];      // output item ids that must be crafted HQ
-            HashSet<uint> processed = [];     // recipe ids already planned as must-HQ
-            Queue<ListItem> queue = new();
 
+            // must-HQ roots: final outputs, plus components produced in surplus of what the list consumes
+            HashSet<uint> mustHQ = [];
             foreach (var itemId in finalOutputs)
-                if (producedBy.TryGetValue(itemId, out var li) && processed.Add(li.ID))
-                    queue.Enqueue(li);
-
-            // items that are both a component AND produced in surplus of what the list consumes
-            // must also be treated as must-HQ (spec: final output + component => must-HQ)
+                if (producedBy.TryGetValue(itemId, out var li))
+                    mustHQ.Add(li.ID);
             foreach (var (itemId, li) in producedBy)
-            {
-                if (li.Quantity * (int)LuminaSheets.RecipeSheet[li.ID].AmountResult > consumedQty.GetValueOrDefault(itemId, 0) && processed.Add(li.ID))
-                    queue.Enqueue(li);
-            }
+                if (li.Quantity * (int)LuminaSheets.RecipeSheet[li.ID].AmountResult > consumedQty.GetValueOrDefault(itemId, 0))
+                    mustHQ.Add(li.ID);
 
-            while (queue.Count > 0)
-            {
-                token.ThrowIfCancellationRequested();
-                await PlanMustHQItem(list, queue.Dequeue(), producedBy, hqNeeded, processed, queue, token);
-            }
+            // PASS 1 — bottom-up cost table
+            var table = await ComputeCostTable(list, producedBy, token);
 
             token.ThrowIfCancellationRequested();
-            await DemoteRemainingComponents(list, producedBy, hqNeeded, finalOutputs, processed, token);
+
+            // PASS 2 — top-down assignment
+            await ApplyAssignments(list, producedBy, mustHQ, table, token);
 
             list.SpeedOptimized = true;
             P.Config.Save(); // also persists RaphaelCache
@@ -97,19 +109,21 @@ public static class ListSpeedOptimizer
         catch (OperationCanceledException)
         {
             Status = OptimizerState.Cancelled;
-            P.Config.Save(); // persist whatever was applied before cancellation
+            P.Config.Save();
         }
         catch (Exception ex)
         {
             ex.Log("List speed optimization failed.");
             Status = OptimizerState.Failed;
-            P.Config.Save(); // persist whatever was applied before the failure
+            P.Config.Save();
         }
         finally
         {
             CurrentItemName = "";
         }
     }
+
+    // ---- shared helpers (unchanged from the shipped feature) ----
 
     private static (CraftState craft, RaphaelSolutionConfig config) BuildCraft(Recipe recipe)
     {
@@ -141,115 +155,306 @@ public static class ListSpeedOptimizer
         P.Config.RecipeConfigs[recipeId] = cfg;
     }
 
-    private static async Task PlanMustHQItem(NewCraftingList list, ListItem li, Dictionary<uint, ListItem> producedBy, HashSet<uint> hqNeeded, HashSet<uint> processed, Queue<ListItem> queue, CancellationToken token)
+    // ---- PASS 1: cost table ----
+
+    private static async Task<Dictionary<uint, ItemCost>> ComputeCostTable(NewCraftingList list, Dictionary<uint, ListItem> producedBy, CancellationToken token)
+    {
+        var table = new Dictionary<uint, ItemCost>();
+        var remaining = producedBy.Values.GroupBy(x => x.ID).Select(g => g.First()).ToList();
+
+        while (remaining.Count > 0)
+        {
+            token.ThrowIfCancellationRequested();
+            int before = remaining.Count;
+            for (int i = remaining.Count - 1; i >= 0; i--)
+            {
+                var li = remaining[i];
+                var recipe = LuminaSheets.RecipeSheet[li.ID];
+                var childRecipeIds = recipe.Ingredients()
+                    .Where(x => x.Amount > 0 && x.Item.RowId > 0 && producedBy.ContainsKey(x.Item.RowId))
+                    .Select(x => producedBy[x.Item.RowId].ID)
+                    .Distinct();
+                if (childRecipeIds.All(id => id == li.ID || table.ContainsKey(id)))
+                {
+                    table[li.ID] = await CostItem(li, producedBy, table, token);
+                    remaining.RemoveAt(i);
+                }
+            }
+            if (remaining.Count == before)
+            {
+                // dependency cycle / self-consumption: cost the rest with whatever children are known
+                foreach (var li in remaining)
+                    table.TryAdd(li.ID, await CostItem(li, producedBy, table, token));
+                break;
+            }
+        }
+        return table;
+    }
+
+    private static async Task<ItemCost> CostItem(ListItem li, Dictionary<uint, ListItem> producedBy, Dictionary<uint, ItemCost> table, CancellationToken token)
     {
         var recipe = LuminaSheets.RecipeSheet[li.ID];
-        var itemName = recipe.ItemResult.Value.Name.ToString();
-        CurrentItemName = itemName;
+        CurrentItemName = recipe.ItemResult.Value.Name.ToString();
         var (craft, config) = BuildCraft(recipe);
-
-        // conservative: on skip/failure, force this item's craftable components HQ so its
-        // subtree keeps today's behavior
-        void ForceComponentsHQ()
-        {
-            foreach (var ing in recipe.Ingredients().Where(x => x.Amount > 0 && x.Item.RowId > 0))
-                if (producedBy.TryGetValue(ing.Item.RowId, out var producer))
-                {
-                    hqNeeded.Add(ing.Item.RowId);
-                    if (processed.Add(producer.ID))
-                        queue.Enqueue(producer);
-                }
-        }
+        var cost = new ItemCost { HQCounts = new int[recipe.Ingredients().Count()] };
 
         if (craft.StatLevel < 7 || craft.IsCosmic)
         {
-            ForceComponentsHQ();
-            LastResults.Add($"{itemName}: skipped ({(craft.IsCosmic ? "cosmic recipe" : "Raphael not unlocked")}), left as-is.");
-            return;
+            cost.SkipOptimize = true;
+            cost.TNq = cost.THq = QuickSynthSeconds();
+            return cost;
         }
+
+        // NQ cost
+        if (recipe.CanQuickSynth && P.ri.HasRecipeCrafted(recipe.RowId))
+        {
+            cost.NqIsQuickSynth = true;
+            cost.TNq = QuickSynthSeconds();
+        }
+        else
+        {
+            var nq = await RaphaelCache.RunRaphaelAsync(craft, config, 0, 0, token);
+            SolvesDone++;
+            if (nq != null) { cost.NqProgressRun = nq; cost.TNq = nq.DurationSeconds; }
+            else { cost.NqIsQuickSynth = true; cost.TNq = QuickSynthSeconds(); } // last-resort: treat as cheap
+        }
+
+        // HQ plan (exact subset search)
+        await SelectHQ(recipe, craft, config, producedBy, table, cost, token);
+
+        // fully-loaded per-unit price of keeping this item HQ
+        var amountResult = Math.Max(1, (int)recipe.AmountResult);
+        var ings = recipe.Ingredients().ToList();
+        double childExtra = 0;
+        foreach (var childId in cost.ChosenHQChildIds)
+        {
+            var amt = ings.Where(x => x.Item.RowId == childId).Sum(x => x.Amount);
+            if (producedBy.TryGetValue(childId, out var pr) && table.TryGetValue(pr.ID, out var cc))
+                childExtra += amt * cc.PricePerUnit;
+        }
+        cost.PricePerUnit = cost.NoQualityTarget ? 0 : ((cost.THq - cost.TNq) + childExtra) / amountResult;
+        return cost;
+    }
+
+    // Fills cost.PlannedIQ/HQCounts/Production/ChosenHQChildIds/THq/Unreachable/NoQualityTarget.
+    private static async Task SelectHQ(Recipe recipe, CraftState craft, RaphaelSolutionConfig config, Dictionary<uint, ListItem> producedBy, Dictionary<uint, ItemCost> table, ItemCost cost, CancellationToken token)
+    {
+        var ings = recipe.Ingredients().ToList();
+        cost.HQCounts = new int[ings.Count];
 
         var canBeHq = LuminaSheets.ItemSheet[recipe.ItemResult.RowId].CanBeHq;
         if (!canBeHq && !craft.CraftCollectible)
         {
-            // no quality target: nothing forces its components HQ either
-            LastResults.Add($"{itemName}: no quality target, components eligible for NQ.");
+            cost.NoQualityTarget = true;
+            cost.Production = cost.NqProgressRun ?? await RaphaelCache.RunRaphaelAsync(craft, config, 0, 0, token);
+            if (cost.NqProgressRun == null && cost.Production != null) SolvesDone++;
+            cost.THq = cost.Production?.DurationSeconds ?? cost.TNq;
             return;
         }
 
         var target = craft.CraftCollectible && !craft.IsCosmic ? craft.CraftQualityMin3 : craft.CraftQualityMax;
 
-        // slots aligned with the FULL recipe.Ingredients() enumeration (GetStartingQuality
-        // indexes hqCount by that enumeration, including empty slots)
-        var ings = recipe.Ingredients().ToList();
-        var hqCounts = new int[ings.Count];
-        List<(int Slot, uint ItemId, int Contribution)> candidates = [];
+        // candidates: craftable, HQ-able, produced by this list, not user-marked NQOnly
+        var candidates = new List<(int Slot, uint ItemId, int Amount, int Contribution, double Price)>();
         for (int i = 0; i < ings.Count; i++)
         {
             var ing = ings[i];
             if (ing.Amount == 0 || ing.Item.RowId <= 0) continue;
             if (!LuminaSheets.ItemSheet[ing.Item.RowId].CanBeHq) continue;
-            if (!producedBy.TryGetValue(ing.Item.RowId, out var producer)) continue;   // not crafted by this list
-            if (producer.ListItemOptions?.NQOnly == true) continue;                    // user wants it NQ; respect
-            if (hqNeeded.Contains(ing.Item.RowId)) { hqCounts[i] = ing.Amount; continue; } // already forced by another parent
+            if (!producedBy.TryGetValue(ing.Item.RowId, out var producer)) continue;
+            if (producer.ListItemOptions?.NQOnly == true) continue;
             var solo = new int[ings.Count];
             solo[i] = ing.Amount;
-            candidates.Add((i, ing.Item.RowId, Calculations.GetStartingQuality(recipe, solo)));
+            var contribution = Calculations.GetStartingQuality(recipe, solo);
+            var price = ing.Amount * (table.TryGetValue(producer.ID, out var cc) ? cc.PricePerUnit : 0.0);
+            candidates.Add((i, ing.Item.RowId, ing.Amount, contribution, price));
         }
 
-        var baseIQ = Calculations.GetStartingQuality(recipe, hqCounts);
-        var probe = await RaphaelCache.RunRaphaelAsync(craft, config, baseIQ, null, token);
+        void ForceAllHQ()
+        {
+            cost.HQCounts = new int[ings.Count];
+            cost.ChosenHQChildIds = [];
+            foreach (var c in candidates) { cost.HQCounts[c.Slot] = c.Amount; cost.ChosenHQChildIds.Add(c.ItemId); }
+        }
+
+        var probe = await RaphaelCache.RunRaphaelAsync(craft, config, 0, null, token);
         SolvesDone++;
         if (probe == null)
         {
-            ForceComponentsHQ();
-            LastResults.Add($"{itemName}: Raphael solve failed/timed out, left unoptimized.");
+            ForceAllHQ();
+            cost.PlannedIQ = Calculations.GetStartingQuality(recipe, cost.HQCounts);
+            cost.Unreachable = true;
+            cost.THq = cost.TNq; // unknown; won't beat anything
             return;
         }
 
-        RaphaelRunResult production;
-        List<(int Slot, uint ItemId, int Contribution)> chosen = [];
-        int plannedIQ;
         if (probe.FinalQuality >= target)
         {
-            production = probe;
-            plannedIQ = baseIQ;
-        }
-        else
-        {
-            // quality is additive: probe maxed out action quality, so the deficit is exact
-            var actionQualityMax = probe.FinalQuality - baseIQ;
-            var neededIQ = target - actionQualityMax;
-            foreach (var c in candidates.OrderByDescending(x => x.Contribution))
-            {
-                if (Calculations.GetStartingQuality(recipe, hqCounts) >= neededIQ) break;
-                hqCounts[c.Slot] = ings[c.Slot].Amount;
-                chosen.Add(c);
-            }
-            plannedIQ = Calculations.GetStartingQuality(recipe, hqCounts);
-            if (plannedIQ < neededIQ)
-            {
-                ForceComponentsHQ();
-                LastResults.Add($"{itemName}: target quality unreachable even with all components HQ, left unoptimized.");
-                return;
-            }
-            var second = await RaphaelCache.RunRaphaelAsync(craft, config, plannedIQ, null, token);
-            SolvesDone++;
-            if (second == null || second.FinalQuality < target)
-            {
-                ForceComponentsHQ();
-                LastResults.Add($"{itemName}: production solve failed, left unoptimized.");
-                return;
-            }
-            production = second;
+            // base (all children NQ) already reaches target — fastest
+            cost.PlannedIQ = 0;
+            cost.Production = probe;
+            cost.THq = probe.DurationSeconds;
+            return;
         }
 
-        // build + verify + cache the production macro (mirrors RaphaelCache.Build)
-        craft.InitialQuality = plannedIQ;
+        var neededIQ = target - probe.FinalQuality; // additivity: probe maxed action quality at IQ 0
+
+        int cap = Math.Max(1, P.Config.RaphaelSolverConfig.SpeedOptimizerCandidateCap);
+        var cands = candidates;
+        if (cands.Count > cap)
+            cands = candidates.OrderByDescending(c => c.Contribution / Math.Max(c.Price, 1e-6)).Take(cap).ToList();
+
+        if (cands.Sum(c => c.Contribution) < neededIQ)
+        {
+            // can't cover the deficit even with all candidates HQ -> conservative all-HQ (uncapped)
+            ForceAllHQ();
+            cost.PlannedIQ = Calculations.GetStartingQuality(recipe, cost.HQCounts);
+            var prod = await RaphaelCache.RunRaphaelAsync(craft, config, cost.PlannedIQ, null, token);
+            SolvesDone++;
+            cost.Production = prod;
+            cost.THq = prod?.DurationSeconds ?? cost.TNq;
+            cost.Unreachable = prod == null || prod.FinalQuality < target;
+            return;
+        }
+
+        // exact subset search over the (<= cap) candidates; parent solved once per distinct IQ
+        var solveCache = new Dictionary<int, RaphaelRunResult?>();
+        double bestTotal = double.MaxValue;
+        bool found = false;
+        for (int mask = 0; mask < (1 << cands.Count); mask++)
+        {
+            token.ThrowIfCancellationRequested();
+            var hq = new int[ings.Count];
+            double pcost = 0;
+            var chosen = new List<uint>();
+            for (int b = 0; b < cands.Count; b++)
+                if ((mask & (1 << b)) != 0)
+                {
+                    var c = cands[b];
+                    hq[c.Slot] = c.Amount;
+                    pcost += c.Price;
+                    chosen.Add(c.ItemId);
+                }
+            var pIQ = Calculations.GetStartingQuality(recipe, hq);
+            if (pIQ < neededIQ) continue;
+            if (!solveCache.TryGetValue(pIQ, out var prod))
+            {
+                prod = await RaphaelCache.RunRaphaelAsync(craft, config, pIQ, null, token);
+                SolvesDone++;
+                solveCache[pIQ] = prod;
+            }
+            if (prod == null || prod.FinalQuality < target) continue;
+            var total = prod.DurationSeconds + pcost;
+            if (total < bestTotal)
+            {
+                bestTotal = total;
+                found = true;
+                cost.PlannedIQ = pIQ;
+                cost.HQCounts = hq;
+                cost.Production = prod;
+                cost.THq = prod.DurationSeconds;
+                cost.ChosenHQChildIds = chosen;
+            }
+        }
+
+        if (!found)
+        {
+            ForceAllHQ();
+            cost.PlannedIQ = Calculations.GetStartingQuality(recipe, cost.HQCounts);
+            var prod = await RaphaelCache.RunRaphaelAsync(craft, config, cost.PlannedIQ, null, token);
+            SolvesDone++;
+            cost.Production = prod;
+            cost.THq = prod?.DurationSeconds ?? cost.TNq;
+            cost.Unreachable = prod == null || prod.FinalQuality < target;
+        }
+    }
+
+    // ---- PASS 2: assignment ----
+
+    private static async Task ApplyAssignments(NewCraftingList list, Dictionary<uint, ListItem> producedBy, HashSet<uint> mustHQ, Dictionary<uint, ItemCost> table, CancellationToken token)
+    {
+        // propagate HQ from must-HQ roots through each item's chosen HQ children
+        var hqSet = new HashSet<uint>();
+        var queue = new Queue<uint>();
+        var seen = new HashSet<uint>();
+        foreach (var id in mustHQ)
+            if (hqSet.Add(id)) queue.Enqueue(id);
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            if (!seen.Add(id)) continue;
+            if (!table.TryGetValue(id, out var c)) continue;
+            foreach (var childId in c.ChosenHQChildIds)
+                if (producedBy.TryGetValue(childId, out var pr) && hqSet.Add(pr.ID))
+                    queue.Enqueue(pr.ID);
+        }
+
+        double oldBatch = 0, newBatch = 0;
+
+        foreach (var li in list.Recipes)
+        {
+            token.ThrowIfCancellationRequested();
+            if (li.ListItemOptions?.Skipping == true || li.Quantity == 0) continue;
+            if (!table.TryGetValue(li.ID, out var cost)) continue;
+            var recipe = LuminaSheets.RecipeSheet[li.ID];
+            var itemName = recipe.ItemResult.Value.Name.ToString();
+            bool isHQ = hqSet.Contains(li.ID);
+
+            oldBatch += li.Quantity * cost.THq;
+            newBatch += li.Quantity * (isHQ ? cost.THq : cost.TNq);
+
+            if (cost.SkipOptimize)
+            {
+                LastResults.Add($"{itemName}: skipped (Raphael not unlocked / cosmic), left as-is.");
+                continue;
+            }
+            if (isHQ && cost.NoQualityTarget)
+            {
+                LastResults.Add($"{itemName}: no HQ quality target, left as-is (its components eligible for NQ).");
+                continue;
+            }
+            if (isHQ)
+                ApplyHQ(li, recipe, cost, itemName);
+            else
+                ApplyNQ(li, recipe, cost, itemName);
+        }
+
+        LastResults.Insert(0, $"Estimated batch time: {FmtSeconds(oldBatch)} all-HQ → {FmtSeconds(newBatch)} optimized (saved ~{FmtSeconds(Math.Max(0, oldBatch - newBatch))}).");
+    }
+
+    private static void ApplyHQ(ListItem li, Recipe recipe, ItemCost cost, string itemName)
+    {
+        var (craft, config) = BuildCraft(recipe);
+        var target = craft.CraftCollectible && !craft.IsCosmic ? craft.CraftQualityMin3 : craft.CraftQualityMax;
+
+        void LeaveUnoptimized(string why)
+        {
+            li.ListItemOptions ??= new();
+            var p = NewPlan(li.ID, craft);
+            // all-HQ ingredient split reproduces today's behavior for this item
+            var full = new int[recipe.Ingredients().Count()];
+            int s = 0;
+            foreach (var ing in recipe.Ingredients()) { if (ing.Amount > 0 && ing.Item.RowId > 0 && LuminaSheets.ItemSheet[ing.Item.RowId].CanBeHq) full[s] = ing.Amount; s++; }
+            p.HQCounts = full;
+            p.PlannedIQ = cost.PlannedIQ;
+            p.DemotedToNQ = false;
+            p.EstimatedSeconds = cost.THq;
+            li.ListItemOptions.SpeedPlan = p;
+            LastResults.Add($"{itemName} x{li.Quantity}: {why}");
+        }
+
+        if (cost.Production == null || cost.Unreachable)
+        {
+            LeaveUnoptimized("left unoptimized (all components HQ).");
+            return;
+        }
+
+        craft.InitialQuality = cost.PlannedIQ;
         var macro = new MacroSolverSettings.Macro
         {
             ID = RaphaelCache.GetNewID(),
             Name = RaphaelCache.GetTextKey(craft, config),
-            Steps = MacroUI.ParseMacro(production.ActionIds, craft),
+            Steps = MacroUI.ParseMacro(cost.Production.ActionIds, craft),
             Options = new RaphaelOptions
             {
                 SkipQualityIfMet = false,
@@ -264,18 +469,17 @@ public static class ListSpeedOptimizer
                 QualityMax = craft.CraftQualityMax,
                 Durability = craft.CraftDurability,
                 IsExpert = craft.CraftExpert,
-                InitialQuality = plannedIQ,
+                InitialQuality = cost.PlannedIQ,
                 IsSpecialist = craft.Specialist,
                 SteadyHandUses = Math.Min(craft.CurrentSteadyHandCharges, P.Config.RaphaelSolverConfig.MaxStellarHand),
                 SolutionConfig = config
             }
         };
 
-        var sim = SolverUtils.SimulateSolverExecution(new MacroSolver(macro, craft), craft, plannedIQ);
+        var sim = SolverUtils.SimulateSolverExecution(new MacroSolver(macro, craft), craft, cost.PlannedIQ);
         if (sim == null || sim.Progress < craft.CraftProgress || sim.Quality < target)
         {
-            ForceComponentsHQ();
-            LastResults.Add($"{itemName}: simulator verification failed, left unoptimized.");
+            LeaveUnoptimized("simulator verification failed, left unoptimized.");
             return;
         }
 
@@ -283,89 +487,64 @@ public static class ListSpeedOptimizer
 
         li.ListItemOptions ??= new();
         var plan = NewPlan(li.ID, craft);
-        plan.HQCounts = hqCounts;
-        plan.PlannedIQ = plannedIQ;
+        plan.HQCounts = cost.HQCounts;
+        plan.PlannedIQ = cost.PlannedIQ;
         plan.DemotedToNQ = false;
+        plan.EstimatedSeconds = cost.THq;
         li.ListItemOptions.SpeedPlan = plan;
         AssignSolver(li.ID, typeof(RaphaelSolverDefintion).FullName!, 3);
 
-        foreach (var c in chosen)
-        {
-            hqNeeded.Add(c.ItemId);
-            var producer = producedBy[c.ItemId];
-            if (processed.Add(producer.ID))
-                queue.Enqueue(producer);
-        }
-
-        var hqNames = hqCounts.Select((n, i) => n > 0 && producedBy.ContainsKey(ings[i].Item.RowId) ? LuminaSheets.ItemSheet[ings[i].Item.RowId].Name.ToString() : null).Where(x => x != null).ToList();
-        LastResults.Add($"{itemName}: HQ with starting quality {plannedIQ} ({production.Steps} steps){(hqNames.Count > 0 ? $", needs HQ: {string.Join(", ", hqNames)}" : ", all crafted components NQ")}.");
+        var hqNames = cost.ChosenHQChildIds.Select(id => LuminaSheets.ItemSheet[id].Name.ToString()).ToList();
+        LastResults.Add($"{itemName} x{li.Quantity}: HQ (start quality {cost.PlannedIQ}, {cost.Production.Steps} steps){(hqNames.Count > 0 ? $", needs HQ: {string.Join(", ", hqNames)}" : ", all components NQ")}.");
     }
 
-    private static async Task DemoteRemainingComponents(NewCraftingList list, Dictionary<uint, ListItem> producedBy, HashSet<uint> hqNeeded, HashSet<uint> finalOutputs, HashSet<uint> processed, CancellationToken token)
+    private static void ApplyNQ(ListItem li, Recipe recipe, ItemCost cost, string itemName)
     {
-        foreach (var li in list.Recipes)
+        var (craft, config) = BuildCraft(recipe);
+        li.ListItemOptions ??= new();
+        var plan = NewPlan(li.ID, craft);
+        plan.DemotedToNQ = true;
+        plan.HQCounts = new int[recipe.Ingredients().Count()];
+        plan.EstimatedSeconds = cost.TNq;
+
+        if (cost.NqIsQuickSynth)
         {
-            token.ThrowIfCancellationRequested();
-            if (li.ListItemOptions?.Skipping == true || li.Quantity == 0) continue;
-            var recipe = LuminaSheets.RecipeSheet[li.ID];
-            var outId = recipe.ItemResult.RowId;
-            if (finalOutputs.Contains(outId)) continue;      // final output, not a component
-            if (!producedBy.ContainsKey(outId)) continue;
-            if (hqNeeded.Contains(outId)) continue;          // must stay HQ
-            if (processed.Contains(li.ID)) continue;         // already planned as must-HQ (e.g. surplus producer)
-            if (li.ListItemOptions?.NQOnly == true) continue; // user already handles it
-
-            var itemName = recipe.ItemResult.Value.Name.ToString();
-            CurrentItemName = itemName;
-            var (craft, config) = BuildCraft(recipe);
-
-            li.ListItemOptions ??= new();
-            var plan = NewPlan(li.ID, craft);
-            plan.DemotedToNQ = true;
-            plan.HQCounts = new int[recipe.Ingredients().Count()]; // all NQ
-
-            if (recipe.CanQuickSynth && P.ri.HasRecipeCrafted(recipe.RowId))
-            {
-                LastResults.Add($"{itemName}: demoted to NQ (quick synth).");
-            }
-            else if (craft.StatLevel >= 7 && !craft.IsCosmic)
-            {
-                var run = await RaphaelCache.RunRaphaelAsync(craft, config, 0, 0, token);
-                SolvesDone++;
-                if (run != null)
-                {
-                    var name = $"Speed: {itemName} (NQ)";
-                    var macro = P.Config.MacroSolverConfig.Macros.Find(m => m.Name == name);
-                    if (macro == null)
-                    {
-                        macro = new MacroSolverSettings.Macro { Name = name };
-                        P.Config.MacroSolverConfig.AddNewMacro(macro);
-                    }
-                    macro.Steps = MacroUI.ParseMacro(run.ActionIds, craft);
-                    macro.Options = new MacroSolverSettings.MacroOptions
-                    {
-                        MinCraftsmanship = craft.StatCraftsmanship,
-                    };
-                    AssignSolver(li.ID, typeof(MacroSolverDefinition).FullName!, macro.ID);
-                    plan.NQMacroId = macro.ID;
-                    LastResults.Add($"{itemName}: demoted to NQ (progress-only macro, {run.Steps} steps).");
-                }
-                else
-                {
-                    LastResults.Add($"{itemName}: demoted to NQ (progress macro generation failed; existing solver kept).");
-                }
-            }
-            else
-            {
-                LastResults.Add($"{itemName}: demoted to NQ (existing solver kept).");
-            }
-
-            li.ListItemOptions.NQOnly = true;
-            li.ListItemOptions.SpeedPlan = plan;
+            LastResults.Add($"{itemName} x{li.Quantity}: NQ (quick synth, ~{cost.TNq:0.#}s ea).");
         }
+        else if (cost.NqProgressRun != null)
+        {
+            var name = $"Speed: {itemName} (NQ)";
+            var macro = P.Config.MacroSolverConfig.Macros.Find(m => m.Name == name);
+            if (macro == null)
+            {
+                macro = new MacroSolverSettings.Macro { Name = name };
+                P.Config.MacroSolverConfig.AddNewMacro(macro);
+            }
+            macro.Steps = MacroUI.ParseMacro(cost.NqProgressRun.ActionIds, craft);
+            macro.Options = new MacroSolverSettings.MacroOptions { MinCraftsmanship = craft.StatCraftsmanship };
+            AssignSolver(li.ID, typeof(MacroSolverDefinition).FullName!, macro.ID);
+            plan.NQMacroId = macro.ID;
+            LastResults.Add($"{itemName} x{li.Quantity}: NQ (progress macro, {cost.NqProgressRun.Steps} steps).");
+        }
+        else
+        {
+            LastResults.Add($"{itemName} x{li.Quantity}: NQ (existing solver kept).");
+        }
+
+        li.ListItemOptions.NQOnly = true;
+        li.ListItemOptions.SpeedPlan = plan;
     }
 
-    // Restores each planned item's previous solver and optimizer-set NQOnly flag, and drops the plan.
+    private static string FmtSeconds(double seconds)
+    {
+        var ts = TimeSpan.FromSeconds(Math.Round(seconds));
+        if (ts.TotalHours >= 1) return $"{(int)ts.TotalHours}h{ts.Minutes:00}m";
+        if (ts.TotalMinutes >= 1) return $"{ts.Minutes}m{ts.Seconds:00}s";
+        return $"{ts.Seconds}s";
+    }
+
+    // ---- clear / restore (unchanged) ----
+
     private static void RestorePlans(NewCraftingList list)
     {
         foreach (var li in list.Recipes)
@@ -380,7 +559,7 @@ public static class ListSpeedOptimizer
                 cfg.SolverFlavour = plan.PreviousSolverFlavour;
             }
             if (plan.DemotedToNQ)
-                li.ListItemOptions!.NQOnly = false;   // the optimizer set it (user-NQOnly items never get a plan)
+                li.ListItemOptions!.NQOnly = false;
             li.ListItemOptions!.SpeedPlan = null;
         }
         list.SpeedOptimized = false;
