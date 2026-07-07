@@ -114,6 +114,7 @@ namespace Artisan.CraftingLists
         public int PlannedIQ { get; set; }          // initial quality the Raphael solution was generated at
         public bool DemotedToNQ { get; set; }       // this item itself is crafted NQ
         public int NQMacroId { get; set; }          // macro assigned when demoted & not quick-synthable (0 = quick synth / none)
+        public double EstimatedSeconds { get; set; }   // per-craft seconds this plan assumes (HQ rotation, or NQ synth)
         public string PreviousSolverType { get; set; } = "";
         public int PreviousSolverFlavour { get; set; }
         public int SnapshotCraftsmanship { get; set; }
