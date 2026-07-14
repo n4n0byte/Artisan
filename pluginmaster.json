@@ -1,0 +1,17 @@
+[
+  {
+    "Author": "Taurenkey (Puni.sh)",
+    "Name": "Nightshade",
+    "InternalName": "Nightshade",
+    "AssemblyVersion": "4.0.5.15",
+    "Description": "The all-in-one crafting plugin.",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/n4n0byte/Artisan",
+    "Tags": ["crafting"],
+    "DalamudApiLevel": 15,
+    "IconUrl": "https://s3.puni.sh/media/plugin/6/icon-3h8wd5b9qr.png",
+    "Punchline": "A 'simple' crafting plugin.",
+    "DownloadLinkInstall": "https://github.com/n4n0byte/Artisan/releases/download/nightshade-v4.0.5.15/Nightshade.zip",
+    "DownloadLinkUpdate": "https://github.com/n4n0byte/Artisan/releases/download/nightshade-v4.0.5.15/Nightshade.zip"
+  }
+]
