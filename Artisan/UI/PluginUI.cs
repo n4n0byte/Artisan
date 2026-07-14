@@ -809,6 +809,12 @@ namespace Artisan.UI
                     P.Config.Save();
             }
 
+            if (ImGui.CollapsingHeader("Craft Optimization"))
+            {
+                changed |= ImGui.Checkbox("Enable craft optimization", ref P.Config.EnableCraftOptimization);
+                ImGuiComponents.HelpMarker("Shows the Fastest Raphael craft-list optimizer, which plans a list to minimize total crafting time.");
+            }
+
             using (ImRaii.Disabled())
             {
                 if (ImGui.CollapsingHeader("Script Solver Settings (Currently Disabled)"))

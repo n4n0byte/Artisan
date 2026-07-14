@@ -257,7 +257,8 @@ internal class ListEditor : Window, IDisposable
                     ImGuiEx.Text(ImGuiColors.DalamudYellow, $"You have turned off Allagan Tools integration.");
             }
 
-            DrawSpeedOptimizer();
+            if (P.Config.EnableCraftOptimization)
+                DrawSpeedOptimizer();
 
             if (ImGui.BeginTabBar("CraftingListEditor", ImGuiTabBarFlags.None))
             {
