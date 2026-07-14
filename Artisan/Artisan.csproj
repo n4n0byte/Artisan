@@ -11,11 +11,11 @@
 	<PropertyGroup>
 		<DalamudLibPath>$(appdata)\XIVLauncher\addon\Hooks\dev\</DalamudLibPath>
 		<DalamudPluginPath>$(appdata)\XIVLauncher\installedPlugins\Artisan\$(version)</DalamudPluginPath>
-		<DalamudDevPlugins>$(appdata)\XIVLauncher\devPlugins\Artisan\</DalamudDevPlugins>
-		<AssemblyName>Artisan</AssemblyName>
+		<DalamudDevPlugins>$(appdata)\XIVLauncher\devPlugins\Nightshade\</DalamudDevPlugins>
+		<AssemblyName>Nightshade</AssemblyName>
 		<RootNamespace>Artisan</RootNamespace>
-		<PackageId>Artisan</PackageId>
-		<Product>Artisan</Product>
+		<PackageId>Nightshade</PackageId>
+		<Product>Nightshade</Product>
 		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 	</PropertyGroup>
 
@@ -58,7 +58,7 @@
     <None Update="Images\artisan-icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="Artisan.json">
+    <None Update="Nightshade.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Images\artisan.png">

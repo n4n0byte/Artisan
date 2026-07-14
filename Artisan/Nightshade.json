@@ -1,0 +1,12 @@
+{
+  "Author": "Taurenkey (Puni.sh)",
+  "Name": "Nightshade",
+  "Punchline": "A 'simple' crafting plugin.",
+  "Description": "The all-in-one crafting plugin.",
+  "InternalName": "Nightshade",
+  "ApplicableVersion": "any",
+  "IconUrl": "https://s3.puni.sh/media/plugin/6/icon-3h8wd5b9qr.png",
+  "Tags": ["crafting"],
+  "RepoUrl": "https://github.com/PunishXIV/Artisan",
+  "DalamudApiLevel": 15
+}
